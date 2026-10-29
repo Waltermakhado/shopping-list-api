@@ -94,7 +94,11 @@ async function handleRequest(
       throw new RouteError("id must be a positive integer", 400);
     }
 
-    if (request.method !== "GET" && request.method !== "PUT") {
+    if (
+      request.method !== "GET" &&
+      request.method !== "PUT" &&
+      request.method !== "DELETE"
+    ) {
       throw new RouteError("Method not allowed", 405);
     }
 
@@ -105,6 +109,13 @@ async function handleRequest(
 
     if (request.method === "GET") {
       sendJson(response, 200, { success: true, data: item });
+      return;
+    }
+
+    if (request.method === "DELETE") {
+      items.splice(items.indexOf(item), 1);
+      response.writeHead(204);
+      response.end();
       return;
     }
 
