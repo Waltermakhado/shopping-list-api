@@ -1,39 +1,11 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { readBody } from "./utils/body";
+import { HttpError, sendError, sendSuccess } from "./utils/response";
 import type { Item } from "./models/item";
-
-class RouteError extends Error {
-  constructor(
-    message: string,
-    readonly statusCode: number,
-  ) {
-    super(message);
-  }
-}
 
 const port = 3000;
 const items: Item[] = [];
 let nextId = 1;
-
-function sendJson(response: ServerResponse, statusCode: number, body: unknown): void {
-  response.writeHead(statusCode, { "Content-Type": "application/json" });
-  response.end(JSON.stringify(body));
-}
-
-function readJsonBody(request: IncomingMessage): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-
-    request.on("data", (chunk: Buffer) => chunks.push(chunk));
-    request.on("error", reject);
-    request.on("end", () => {
-      try {
-        resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown);
-      } catch {
-        reject(new RouteError("Invalid JSON body", 400));
-      }
-    });
-  });
-}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -49,29 +21,29 @@ async function handleRequest(
       .filter(Boolean);
 
     if (segments[0] !== "items" || segments.length < 1 || segments.length > 2) {
-      throw new RouteError("Route not found", 404);
+      throw new HttpError("Route not found", 404);
     }
 
     if (segments.length === 1 && request.method === "GET") {
-      sendJson(response, 200, { success: true, data: items });
+      sendSuccess(response, 200, items);
       return;
     }
 
     if (segments.length === 1 && request.method === "POST") {
-      const body = await readJsonBody(request);
+      const body = await readBody(request);
       if (!isRecord(body)) {
-        throw new RouteError("Request body must be a JSON object", 400);
+        throw new HttpError("Request body must be a JSON object", 400);
       }
 
       const { name, quantity, purchased } = body;
       if (typeof name !== "string" || name.trim().length === 0) {
-        throw new RouteError("name must be a non-empty string", 400);
+        throw new HttpError("name must be a non-empty string", 400);
       }
-      if (!Number.isInteger(quantity) || typeof quantity !== "number" || quantity <= 0) {
-        throw new RouteError("quantity must be a positive integer", 400);
+      if (typeof quantity !== "number" || !Number.isInteger(quantity) || quantity <= 0) {
+        throw new HttpError("quantity must be a positive integer", 400);
       }
       if (purchased !== undefined && typeof purchased !== "boolean") {
-        throw new RouteError("purchased must be a boolean", 400);
+        throw new HttpError("purchased must be a boolean", 400);
       }
 
       const item: Item = {
@@ -81,17 +53,17 @@ async function handleRequest(
         purchased: purchased ?? false,
       };
       items.push(item);
-      sendJson(response, 201, { success: true, data: item });
+      sendSuccess(response, 201, item);
       return;
     }
 
     if (segments.length !== 2) {
-      throw new RouteError("Method not allowed", 405);
+      throw new HttpError("Method not allowed", 405);
     }
 
     const id = Number(segments[1]);
     if (!Number.isInteger(id) || id <= 0) {
-      throw new RouteError("id must be a positive integer", 400);
+      throw new HttpError("id must be a positive integer", 400);
     }
 
     if (
@@ -99,16 +71,16 @@ async function handleRequest(
       request.method !== "PUT" &&
       request.method !== "DELETE"
     ) {
-      throw new RouteError("Method not allowed", 405);
+      throw new HttpError("Method not allowed", 405);
     }
 
     const item = items.find((entry) => entry.id === id);
     if (!item) {
-      throw new RouteError("Item not found", 404);
+      throw new HttpError("Item not found", 404);
     }
 
     if (request.method === "GET") {
-      sendJson(response, 200, { success: true, data: item });
+      sendSuccess(response, 200, item);
       return;
     }
 
@@ -119,22 +91,22 @@ async function handleRequest(
       return;
     }
 
-    const body = await readJsonBody(request);
+    const body = await readBody(request);
     if (!isRecord(body)) {
-      throw new RouteError("Request body must be a JSON object", 400);
+      throw new HttpError("Request body must be a JSON object", 400);
     }
 
     const hasName = Object.prototype.hasOwnProperty.call(body, "name");
     const hasQuantity = Object.prototype.hasOwnProperty.call(body, "quantity");
     const hasPurchased = Object.prototype.hasOwnProperty.call(body, "purchased");
     if (!hasName && !hasQuantity && !hasPurchased) {
-      throw new RouteError("At least one item field must be provided", 400);
+      throw new HttpError("At least one item field must be provided", 400);
     }
     const updates: Partial<Pick<Item, "name" | "quantity" | "purchased">> = {};
 
     if (hasName) {
       if (typeof body.name !== "string" || body.name.trim().length === 0) {
-        throw new RouteError("name must be a non-empty string", 400);
+        throw new HttpError("name must be a non-empty string", 400);
       }
       updates.name = body.name.trim();
     }
@@ -144,23 +116,27 @@ async function handleRequest(
         !Number.isInteger(body.quantity) ||
         body.quantity <= 0
       ) {
-        throw new RouteError("quantity must be a positive integer", 400);
+        throw new HttpError("quantity must be a positive integer", 400);
       }
       updates.quantity = body.quantity;
     }
     if (hasPurchased) {
       if (typeof body.purchased !== "boolean") {
-        throw new RouteError("purchased must be a boolean", 400);
+        throw new HttpError("purchased must be a boolean", 400);
       }
       updates.purchased = body.purchased;
     }
 
     Object.assign(item, updates);
-    sendJson(response, 200, { success: true, data: item });
+    sendSuccess(response, 200, item);
   } catch (error) {
-    const statusCode = error instanceof RouteError ? error.statusCode : 500;
-    const message = error instanceof Error ? error.message : "Internal server error";
-    sendJson(response, statusCode, { success: false, error: message });
+    if (error instanceof HttpError) {
+      sendError(response, error.statusCode, error.message);
+      return;
+    }
+
+    console.error("Unexpected request error:", error);
+    sendError(response, 500, "Internal server error");
   }
 }
 
